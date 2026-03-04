@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from loguru import logger
 from config import get_config
-from pdf_parser import CompetencyPDFParser
+from pdf_parser_v2 import CompetencyPDFParser
 from graph_builder import CompetencyKnowledgeGraph
 from graph_rag import GraphRAGQueryEngine
 

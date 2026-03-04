@@ -44,6 +44,7 @@ data/parsed_json_v2/
 # ============================
 data/*.db
 data/*.pkl
+data/**/_index_cache.pkl
 *.db
 *.sqlite
 *.sqlite3

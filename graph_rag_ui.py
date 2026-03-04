@@ -28,8 +28,7 @@ from PyQt6.QtGui import QFont, QTextCursor, QCursor, QDesktopServices
 from config import get_config
 from graph_builder import CompetencyKnowledgeGraph
 from graph_rag import GraphRAGQueryEngine, QueryResult
-from pdf_parser import CompetencyPDFParser
-from pdf_parser_v2 import parse_pdf_to_json
+from pdf_parser_v2 import CompetencyPDFParser, parse_pdf_to_json
 from competency_store import CompetencyJSONStore, fix_industry_in_json_files
 
 config = get_config()

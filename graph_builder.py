@@ -15,7 +15,7 @@ from loguru import logger
 from tqdm import tqdm
 
 from config import get_config
-from pdf_parser import ParsedCompetencyStandard, CompetencyPDFParser
+from pdf_parser_v2 import ParsedCompetencyStandard, CompetencyPDFParser
 
 config = get_config()
 

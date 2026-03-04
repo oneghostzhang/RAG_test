@@ -4,7 +4,7 @@
 
 參考論文: Efficient Federated Search for Retrieval-Augmented Generation
 
-資料來源: 支援 JSON 資料存取層 (CompetencyJSONStore) 或 SQLite (CompetencyDatabase)
+資料來源: CompetencyJSONStore (JSON 資料存取層)
 """
 
 import pickle
@@ -30,16 +30,7 @@ except ImportError:
     CompetencyJSONStore = None
     JSON_STORE_AVAILABLE = False
 
-# 導入 competency_db（向後相容）
-try:
-    from competency_db import CompetencyDatabase
-    COMPETENCY_DB_AVAILABLE = True
-except ImportError:
-    CompetencyDatabase = None
-    COMPETENCY_DB_AVAILABLE = False
-
-# 檢查是否有可用的資料來源
-DATA_SOURCE_AVAILABLE = JSON_STORE_AVAILABLE or COMPETENCY_DB_AVAILABLE
+DATA_SOURCE_AVAILABLE = JSON_STORE_AVAILABLE
 if not DATA_SOURCE_AVAILABLE:
     logger.warning("沒有可用的資料來源，聯邦搜索功能受限")
 
@@ -94,23 +85,19 @@ class ICAPMetadataIndex:
     2. CompetencyDatabase - 從 SQLite 資料庫讀取
     """
 
-    def __init__(self, data_source: Union['CompetencyJSONStore', 'CompetencyDatabase', None] = None):
+    def __init__(self, data_source: Optional['CompetencyJSONStore'] = None):
         """
         初始化索引
 
         Args:
-            data_source: 資料來源（CompetencyJSONStore 或 CompetencyDatabase）
+            data_source: 資料來源（CompetencyJSONStore）
         """
         self.data_source = data_source
         self.json_store = None
-        self.competency_db = None
 
         # 判斷資料來源類型
-        if data_source is not None:
-            if JSON_STORE_AVAILABLE and isinstance(data_source, CompetencyJSONStore):
-                self.json_store = data_source
-            elif COMPETENCY_DB_AVAILABLE and isinstance(data_source, CompetencyDatabase):
-                self.competency_db = data_source
+        if data_source is not None and JSON_STORE_AVAILABLE and isinstance(data_source, CompetencyJSONStore):
+            self.json_store = data_source
 
         self.metadata: Dict[str, ICAPMetadata] = {}  # code -> metadata
         self.category_index: Dict[str, List[str]] = defaultdict(list)  # category -> [codes]
@@ -134,13 +121,8 @@ class ICAPMetadataIndex:
         if not force_rebuild and self._load_index():
             return True
 
-        # 優先使用 JSON Store
         if self.json_store is not None or JSON_STORE_AVAILABLE:
             return self._build_from_json_store()
-
-        # 回退到 SQLite
-        if self.competency_db is not None or COMPETENCY_DB_AVAILABLE:
-            return self._build_from_database()
 
         logger.error("沒有可用的資料來源")
         return False
@@ -253,94 +235,6 @@ class ICAPMetadataIndex:
 
         except Exception as e:
             logger.error(f"從 JSON Store 建立索引失敗: {e}")
-            return False
-
-    def _build_from_database(self) -> bool:
-        """從 competency_db 建立索引（向後相容）"""
-        if not COMPETENCY_DB_AVAILABLE:
-            logger.error("competency_db 模組不可用")
-            return False
-
-        # 建立資料庫連接
-        if self.competency_db is None:
-            try:
-                self.competency_db = CompetencyDatabase()
-            except Exception as e:
-                logger.error(f"無法連接職能基準資料庫: {e}")
-                return False
-
-        logger.info("從職能基準資料庫建立索引...")
-
-        try:
-            # 查詢所有職能基準
-            with self.competency_db._get_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT
-                        standard_code,
-                        standard_name,
-                        category_code,
-                        category_name,
-                        industry_code,
-                        industry_name,
-                        occupation_code,
-                        occupation_name,
-                        job_description,
-                        source_file
-                    FROM standard
-                """)
-
-                for row in cursor.fetchall():
-                    code = row[0]
-                    name = row[1]
-                    category_code = row[2] or ""
-                    category_name = row[3] or ""
-                    industry_code = row[4] or ""
-                    industry_name = row[5] or ""
-                    occupation_code = row[6] or ""
-                    occupation_name = row[7] or ""
-                    job_description = row[8] or ""
-                    source_file = row[9] or ""
-
-                    if not code or not name:
-                        continue
-
-                    # 建立 metadata
-                    metadata = ICAPMetadata(
-                        code=code,
-                        name=name,
-                        category=category_name,
-                        industry=industry_name,
-                        occupation_class=occupation_code,  # 使用職業別代碼作為分類 ID
-                        occupation_name=occupation_name,
-                        source_url="",
-                        json_path="",
-                        pdf_path=source_file
-                    )
-
-                    self.metadata[code] = metadata
-                    self.name_to_code[name] = code
-
-                    # 建立索引（使用名稱作為 key，更直觀）
-                    if category_name:
-                        self.category_index[category_name].append(code)
-                    if industry_name:
-                        self.industry_index[industry_name].append(code)
-                    # 使用職業別名稱作為分類（更直觀）
-                    if occupation_name:
-                        self.occupation_class_index[occupation_name].append(code)
-                        self.occupation_name_index[occupation_name].append(code)
-
-            logger.success(f"索引建立完成: {len(self.metadata)} 個職能基準, "
-                          f"{len(self.category_index)} 個職類別, "
-                          f"{len(self.industry_index)} 個行業別, "
-                          f"{len(self.occupation_class_index)} 個職業別")
-
-            self._save_index()
-            return True
-
-        except Exception as e:
-            logger.error(f"從資料庫建立索引失敗: {e}")
             return False
 
     def get_metadata_by_code(self, code: str) -> Optional[ICAPMetadata]:
@@ -1355,8 +1249,7 @@ def create_federated_search_system(
     embedding_model,
     force_rebuild: bool = False,
     existing_embeddings: Dict[str, np.ndarray] = None,
-    data_source: Union['CompetencyJSONStore', 'CompetencyDatabase', None] = None,
-    competency_db: 'CompetencyDatabase' = None  # 向後相容
+    data_source: Optional['CompetencyJSONStore'] = None,
 ) -> Optional[FederatedSearchManager]:
     """
     建立聯邦搜索系統（支援多層路由）
@@ -1366,17 +1259,13 @@ def create_federated_search_system(
         embedding_model: SentenceTransformer 模型
         force_rebuild: 是否強制重建
         existing_embeddings: 已計算的節點向量（可選，用於加速）
-        data_source: 資料來源（CompetencyJSONStore 或 CompetencyDatabase）
-        competency_db: CompetencyDatabase 實例（向後相容，優先使用 data_source）
+        data_source: 資料來源（CompetencyJSONStore）
 
     Returns:
         FederatedSearchManager 或 None
     """
-    # 決定資料來源
-    source = data_source or competency_db
-
     # 1. 建立元資料索引
-    metadata_index = ICAPMetadataIndex(data_source=source)
+    metadata_index = ICAPMetadataIndex(data_source=data_source)
     if not metadata_index.build_index(force_rebuild=force_rebuild):
         logger.error("無法建立元資料索引")
         return None
