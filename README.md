@@ -8,20 +8,27 @@
 
 - **📄 PDF 自動解析**
   - 自動解析 ICAP 職能基準 PDF 文件
-  - 提取職能代碼、工作任務、知識、技能、態度等結構化資料
+  - 支援所有職能基準代碼格式（TF 前綴如 `TFB5120-003v3`、非 TF 前綴如 `HBR2431-001v4`）
+  - 提取職能代碼、工作任務、知識（K）、技能（S）、態度（A）等結構化資料
+  - 行業別多值支援，儲存為 JSON 陣列格式
   - 支援批次處理數千份 PDF
 
 - **🕸️ 知識圖譜建構**
   - 11 種節點類型（職能基準、職類別、知識、技能等）
   - 13 種邊類型（屬於、包含、需要等關係）
-  - 自動推斷職涯晉升路徑和知識/技能關聯
+  - 自動推斷職涯晉升路徑和知識／技能關聯
+  - 支援社群偵測（Community Detection）
 
-- **🔍 五種查詢類型**
-  1. **跨職業比較**: 比較兩個職業的共同和差異能力
-  2. **職涯路徑**: 找出晉升路徑和需要補充的能力
-  3. **能力反查**: 根據知識/技能找適合的職業
-  4. **聚合統計**: 統計最常被需要的知識/技能
-  5. **語義搜尋**: 自然語言查詢 + 圖譜擴展
+- **🔍 三種搜索模式**
+  1. **語義搜尋**：向量 embedding 相似度搜尋
+  2. **聯邦搜索（Federated Search）**：職類別 centroid 路由，縮小搜尋範圍
+  3. **聯邦搜索 + 通俗職業路由**：以自然語言職業名稱進行路由，結果更直觀
+
+- **🖥️ PyQt6 桌面 UI**
+  - 視覺化搜索介面，支援上述三種搜索模式切換
+  - 一鍵解析 PDF、建構圖譜
+  - 知識圖譜視覺化（HTML 互動圖）
+  - 社群分析視覺化
 
 - **🔗 混合檢索策略**
   - 向量檢索：對描述文字做 embedding 相似度搜尋
@@ -33,21 +40,30 @@
 ```
 Graph_RAG_test/
 ├── config.py               # 系統配置
-├── pdf_parser.py           # PDF 解析模組
+├── pdf_parser_v2.py        # PDF 解析模組（v2，支援多種代碼格式）
+├── competency_store.py     # JSON 資料存取層（CompetencyJSONStore）
 ├── graph_builder.py        # 知識圖譜建構模組
+├── graph_community.py      # 社群偵測模組
 ├── graph_rag.py            # Graph RAG 查詢引擎
+├── federated_search.py     # 聯邦搜索模組（RAGRoute 式路由）
+├── graph_rag_ui.py         # PyQt6 桌面 UI
+├── batch_test.py           # 批次解析測試工具
 ├── quick_start.py          # 快速啟動腳本
 ├── requirements.txt        # Python 依賴
 ├── README.md               # 本文件
 │
 ├── data/
-│   ├── raw_pdf/            # 原始 PDF 存放處
-│   └── parsed_json/        # 解析後的 JSON
+│   ├── raw_pdf/            # 原始 PDF 存放處（不納入版控）
+│   ├── parsed_json_v2/     # 解析後的 JSON（不納入版控）
+│   ├── competency_schema.sql  # 資料庫 Schema
+│   └── competency_queries.sql # 常用查詢 SQL
 │
-├── graph_db/               # 知識圖譜儲存
-├── vectordb/               # 向量索引
-├── outputs/                # 輸出結果
-└── logs/                   # 系統日誌
+├── lib/                    # 前端視覺化函式庫
+│   ├── vis-9.1.2/          # vis-network（圖譜視覺化）
+│   └── tom-select/         # 下拉選單元件
+│
+├── graph_db/               # 知識圖譜儲存（不納入版控）
+└── vectordb/               # 向量索引（不納入版控）
 ```
 
 ## 🚀 快速開始
@@ -55,35 +71,37 @@ Graph_RAG_test/
 ### 1. 安裝依賴
 
 ```bash
-cd C:\Users\User\Graph_RAG_test
 pip install -r requirements.txt
 ```
 
-### 2. 執行測試
+### 2. 啟動桌面 UI（建議）
 
 ```bash
-python quick_start.py --mode test --limit 5
+python graph_rag_ui.py
 ```
 
-這會：
-- ✅ 測試 PDF 解析器
-- ✅ 建構測試知識圖譜（5 個職能基準）
-- ✅ 測試 Graph RAG 查詢
+UI 功能：
+- **解析 PDF**：選擇 PDF 資料夾 → 批次解析為 JSON
+- **建構圖譜**：從 JSON 建立知識圖譜 + 向量索引
+- **搜索**：輸入問題，選擇搜索模式查詢
 
-### 3. 建構完整圖譜
+### 3. 命令列快速啟動
 
 ```bash
+# 測試解析 5 個 PDF
+python quick_start.py --mode test --limit 5
+
 # 建構 100 個職能基準的圖譜
 python quick_start.py --mode build --limit 100
 
-# 建構全部（約 2,882 個，需要較長時間）
-python quick_start.py --mode build
+# 互動查詢
+python quick_start.py --mode interactive
 ```
 
-### 4. 互動查詢
+### 4. 批次解析 PDF
 
 ```bash
-python quick_start.py --mode interactive
+python batch_test.py --input data/raw_pdf --output data/parsed_json_v2
 ```
 
 ## 📊 知識圖譜結構
@@ -100,9 +118,9 @@ python quick_start.py --mode interactive
 | 工作任務 | 代碼, 名稱, 職能級別 | 如：T1.1 整理環境與設備 (級別2) |
 | 工作產出 | 代碼, 名稱 | 如：O1.1.1 環境維護紀錄表 |
 | 行為指標 | 代碼, 描述 | 如：P1.1.1 依食品安全衛生規範... |
-| 知識 | 代碼, 名稱, 描述 | 如：K01 食品安全衛生相關規範 |
-| 技能 | 代碼, 名稱, 描述 | 如：S01 器具選用及操作能力 |
-| 態度 | 代碼, 名稱, 描述 | 如：A01 主動積極 |
+| 知識 | 代碼, 名稱 | 如：K01 食品安全衛生相關規範 |
+| 技能 | 代碼, 名稱 | 如：S01 器具選用及操作能力 |
+| 態度 | 代碼, 名稱 | 如：A01 主動積極 |
 
 ### 邊類型
 
@@ -151,35 +169,53 @@ python quick_start.py --mode interactive
 
 ## 🔧 模組說明
 
-### config.py
-系統配置管理，包含：
-- 路徑配置
-- LLM/Embedding 模型設定
-- 節點和邊類型定義
-- 正則表達式編碼格式
+### pdf_parser_v2.py
+PDF 解析模組（v2）：
+- 使用 pdfplumber 提取文字和表格
+- 支援所有職能基準代碼格式（TF、HBR 等前綴）
+- 動態偵測表格表頭位置，相容不同版面 PDF
+- 行業別自動拆分多值，儲存為 JSON 陣列
+- 輸出含 `chunks_for_rag` 的結構化 JSON
 
-### pdf_parser.py
-PDF 解析模組：
-- 使用 PyMuPDF 提取文字和表格
-- 解析職能基準代碼（TFB7912-002v3）
-- 解析工作任務（T1.1）、產出（O1.1.1）、行為指標（P1.1.1）
-- 解析知識（K01）、技能（S01）、態度（A01）
-- 輸出結構化 JSON
+### competency_store.py
+JSON 資料存取層：
+- 取代舊版 SQLite，直接操作 parsed_json_v2 JSON 檔
+- 支援行業別多值欄位的存取與索引
+- 提供 `fix_industry_in_json_files()` 資料遷移工具
+- 相容新舊 JSON 格式
+
+### federated_search.py
+聯邦搜索模組（RAGRoute 概念）：
+- 依職類別/行業別對職能基準分群
+- 兩種路由策略：職類別 centroid 路由、通俗職業名稱路由
+- 降低全量搜索開銷，提升查詢精度
+- 查詢耗時：語義搜尋 ~7s、聯邦搜尋 ~7-9s
+
+### graph_rag_ui.py
+PyQt6 桌面應用程式：
+- PDF 解析、圖譜建構一鍵操作
+- 四種搜索模式切換（語義 / 聯邦 / 聯邦+通俗路由）
+- 搜索結果顯示職能基準詳細資訊
+- 知識圖譜視覺化與社群分析
 
 ### graph_builder.py
 知識圖譜建構模組：
 - 使用 NetworkX 建立有向多重圖
 - 建立節點和邊索引
 - 推斷職涯晉升路徑
-- 推斷知識/技能關聯
 - 圖譜序列化儲存
 
 ### graph_rag.py
 Graph RAG 查詢引擎：
 - 使用 FAISS 建立向量索引
-- 實現五種查詢類型
-- 混合檢索策略
-- 可選 LLM 答案生成
+- 混合檢索（向量 + 圖譜遍歷）
+- LLM 答案生成，含完整職能術語定義 prompt
+- 可選用 llama-cpp-python 本地模型
+
+### graph_community.py
+社群偵測模組：
+- 基於圖結構自動分群職能基準
+- 輸出 HTML 互動視覺化
 
 ## 📈 效能預估
 
@@ -187,18 +223,20 @@ Graph RAG 查詢引擎：
 |------|------|------|
 | 解析單一 PDF | 1-3 秒 | 依 PDF 複雜度 |
 | 建構圖譜（100 個） | 3-5 分鐘 | 含 PDF 解析 |
-| 建構圖譜（全部） | 1-2 小時 | 約 2,882 個 |
 | 初始化 Embedding | 30-60 秒 | 首次載入 |
-| 單次查詢 | < 1 秒 | 已建立索引 |
+| 語義搜尋 | ~7 秒 | 已建立索引 |
+| 聯邦搜尋 | ~7-9 秒 | 依路由策略 |
 
 ## 🛠️ 技術棧
 
 | 組件 | 技術 | 用途 |
 |------|------|------|
-| PDF 解析 | PyMuPDF | 文字和表格提取 |
+| PDF 解析 | pdfplumber | 文字和表格提取 |
 | 知識圖譜 | NetworkX | 圖資料結構 |
 | 向量檢索 | FAISS | 高效相似度搜尋 |
 | Embedding | sentence-transformers | 文本向量化 |
+| 桌面 UI | PyQt6 | 操作介面 |
+| 圖譜視覺化 | vis-network | 互動式圖譜渲染 |
 | LLM | llama-cpp-python | 答案生成（可選） |
 
 ## ⚠️ 注意事項
