@@ -1,0 +1,42 @@
+# ========================================
+# 職能基準知識圖譜 Graph RAG 系統
+# ========================================
+
+# PDF 解析
+PyMuPDF>=1.23.0          # PDF 文本和表格提取
+pdfplumber>=0.10.0       # PDF 表格專用解析器
+
+# 知識圖譜
+networkx>=3.0            # 圖資料結構
+pyvis>=0.3.0             # 圖視覺化（可選）
+
+# 向量檢索
+faiss-cpu>=1.7.4
+sentence-transformers>=2.2.0
+transformers>=4.30.0
+
+# LLM 整合
+llama-cpp-python>=0.2.0
+langchain>=0.1.0
+langchain-community>=0.0.10
+langchain-huggingface>=0.0.1
+
+# 資料處理
+pandas>=2.0.0
+numpy>=1.24.0
+jieba>=0.42.0            # 中文分詞
+
+# 深度學習
+torch>=2.0.0
+
+# 工具庫
+pydantic>=2.0.0
+tqdm>=4.65.0
+loguru>=0.7.0
+colorama>=0.4.6
+
+# UI（可選）
+PyQt6>=6.10.0
+
+# 開發工具
+pytest>=7.0.0
