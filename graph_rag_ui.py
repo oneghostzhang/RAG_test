@@ -29,7 +29,7 @@ from config import get_config
 from graph_builder import CompetencyKnowledgeGraph
 from graph_rag import GraphRAGQueryEngine, QueryResult
 from pdf_parser_v2 import CompetencyPDFParser, parse_pdf_to_json
-from competency_store import CompetencyJSONStore, fix_industry_in_json_files
+from competency_store import CompetencyJSONStore, fix_industry_in_json_files, build_occupation_index_json
 
 config = get_config()
 
@@ -91,6 +91,13 @@ class PDFParseWorker(QThread):
                 fixed = fix_industry_in_json_files(self.output_dir)
                 if fixed:
                     self.progress.emit(f"已修正 {fixed} 個行業資料格式", total, total)
+            except Exception:
+                pass
+
+            # 自動重建職業索引 JSON（供聯邦搜索快速載入）
+            try:
+                self.progress.emit("重建職業分類索引...", total, total)
+                build_occupation_index_json(self.output_dir)
             except Exception:
                 pass
 

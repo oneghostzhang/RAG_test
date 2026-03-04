@@ -81,8 +81,8 @@ class ICAPMetadataIndex:
     職能基準元資料索引
 
     資料來源（優先順序）：
-    1. CompetencyJSONStore - 直接從 JSON 檔案讀取
-    2. CompetencyDatabase - 從 SQLite 資料庫讀取
+    1. occupation_index.json — 預計算索引，最快（直接讀單一 JSON）
+    2. CompetencyJSONStore   — 掃描 900+ JSON 重新建立，較慢
     """
 
     def __init__(self, data_source: Optional['CompetencyJSONStore'] = None):
@@ -90,7 +90,7 @@ class ICAPMetadataIndex:
         初始化索引
 
         Args:
-            data_source: 資料來源（CompetencyJSONStore）
+            data_source: 資料來源（CompetencyJSONStore），僅在 occupation_index.json 不存在時使用
         """
         self.data_source = data_source
         self.json_store = None
@@ -107,25 +107,112 @@ class ICAPMetadataIndex:
         self.name_to_code: Dict[str, str] = {}  # name -> code
 
         self._index_path = config.DATA_DIR / "competency_metadata_index.pkl"
+        self._occupation_json_path = config.DATA_DIR / "occupation_index.json"
 
     def build_index(self, force_rebuild: bool = False) -> bool:
         """
         建立或載入索引
 
+        載入優先順序：
+        1. occupation_index.json（最快，預計算）
+        2. pickle 快取
+        3. 重新掃描所有 JSON 並儲存 pickle
+
         Args:
-            force_rebuild: 是否強制重建
+            force_rebuild: 是否強制重新掃描（忽略所有快取）
 
         Returns:
             是否成功
         """
-        if not force_rebuild and self._load_index():
-            return True
+        if not force_rebuild:
+            # 優先嘗試預計算 JSON（最快路徑）
+            if self._load_from_occupation_json():
+                return True
+            # 次選 pickle 快取
+            if self._load_index():
+                return True
 
         if self.json_store is not None or JSON_STORE_AVAILABLE:
             return self._build_from_json_store()
 
         logger.error("沒有可用的資料來源")
         return False
+
+    def _load_from_occupation_json(self) -> bool:
+        """從預計算的 occupation_index.json 快速載入索引"""
+        if not self._occupation_json_path.exists():
+            return False
+
+        try:
+            import json as _json
+            with open(self._occupation_json_path, "r", encoding="utf-8") as f:
+                data = _json.load(f)
+
+            standards_data = data.get("standards", {})
+            occupations_data = data.get("occupations", {})
+            categories_data = data.get("categories", {})
+
+            if not standards_data:
+                return False
+
+            # 重建 metadata 與各索引
+            for code, info in standards_data.items():
+                name = info.get("name", "")
+                if not name:
+                    continue
+
+                industry = info.get("industry", [])
+                industry_str = "; ".join(industry) if isinstance(industry, list) else (industry or "")
+
+                meta = ICAPMetadata(
+                    code=code,
+                    name=name,
+                    category=info.get("category", ""),
+                    industry=industry_str,
+                    occupation_class=info.get("occupation_code", ""),
+                    occupation_name=info.get("occupation_name", ""),
+                    source_url="",
+                    json_path="",
+                    pdf_path="",
+                )
+                self.metadata[code] = meta
+                self.name_to_code[name] = code
+
+            # 職業別索引
+            for occ_name, occ_info in occupations_data.items():
+                codes = [s["code"] for s in occ_info.get("standards", [])]
+                if codes:
+                    self.occupation_class_index[occ_name] = codes
+                    self.occupation_name_index[occ_name] = codes
+
+            # 職類別索引
+            for cat_name, cat_info in categories_data.items():
+                codes = cat_info.get("standards", [])
+                if codes:
+                    self.category_index[cat_name] = codes
+
+            # 行業別索引（從 standards 重建）
+            for code, info in standards_data.items():
+                industry = info.get("industry", [])
+                if isinstance(industry, list):
+                    for ind in industry:
+                        if ind:
+                            self.industry_index[ind].append(code)
+                elif industry:
+                    self.industry_index[industry].append(code)
+
+            meta_info = data.get("metadata", {})
+            logger.success(
+                f"從 occupation_index.json 快速載入：{len(self.metadata)} 個職能基準, "
+                f"{len(self.occupation_class_index)} 個職業別, "
+                f"{len(self.category_index)} 個職類別"
+                f"（產生時間：{meta_info.get('generated_at', '未知')}）"
+            )
+            return True
+
+        except Exception as e:
+            logger.warning(f"occupation_index.json 載入失敗，改用掃描模式: {e}")
+            return False
 
     def _load_index(self) -> bool:
         """載入已存儲的索引"""

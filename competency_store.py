@@ -699,3 +699,111 @@ class CompetencyJSONStore:
 def get_store(json_dir: Path = None) -> CompetencyJSONStore:
     """取得資料存取層實例"""
     return CompetencyJSONStore(json_dir)
+
+
+def build_occupation_index_json(
+    json_dir: Path = None,
+    output_path: Path = None
+) -> Path:
+    """
+    從 parsed_json_v2 預先計算通俗職業分類索引，儲存為單一 JSON 檔。
+
+    產生的 occupation_index.json 包含：
+    - occupations：職業別名稱 → {code, standards[]}
+    - categories：職類別名稱 → {code, standards[]}
+    - standards：職能基準代碼 → 基本 metadata
+
+    此檔案可納入 git 版控，讓任何環境都能跳過掃描 900+ JSON
+    直接快速載入聯邦搜索索引。
+
+    Returns:
+        輸出檔案路徑
+    """
+    from datetime import datetime
+    from config import get_config
+
+    config = get_config()
+    if json_dir is None:
+        json_dir = config.PARSED_JSON_V2_DIR
+    if output_path is None:
+        output_path = config.DATA_DIR / "occupation_index.json"
+
+    store = CompetencyJSONStore(json_dir)
+
+    occupations: Dict[str, dict] = {}   # name → {code, standards[]}
+    categories: Dict[str, dict] = {}    # name → {code, standards[]}
+    standards_meta: Dict[str, dict] = {}
+
+    for code, std in store.standards.items():
+        if not code or not std.name:
+            continue
+
+        # 收集 standards 基本 metadata
+        industry = std.industry_name or ""
+        industry_code = std.industry_code or ""
+        # 轉為列表（相容舊格式）
+        if isinstance(industry, str):
+            industry = [industry] if industry else []
+        if isinstance(industry_code, str):
+            industry_code = [industry_code] if industry_code else []
+
+        standards_meta[code] = {
+            "name": std.name,
+            "level": std.level or 0,
+            "category": std.category_name or "",
+            "category_code": std.category_code or "",
+            "occupation_name": std.occupation_name or "",
+            "occupation_code": std.occupation_code or "",
+            "industry": industry,
+            "industry_code": industry_code,
+        }
+
+        # 建立職業別索引
+        occ_name = std.occupation_name or ""
+        occ_code = std.occupation_code or ""
+        if occ_name:
+            if occ_name not in occupations:
+                occupations[occ_name] = {"code": occ_code, "standards": []}
+            occupations[occ_name]["standards"].append({
+                "code": code,
+                "name": std.name,
+                "level": std.level or 0,
+            })
+
+        # 建立職類別索引
+        cat_name = std.category_name or ""
+        cat_code = std.category_code or ""
+        if cat_name:
+            if cat_name not in categories:
+                categories[cat_name] = {"code": cat_code, "standards": []}
+            categories[cat_name]["standards"].append(code)
+
+    # 依名稱排序，方便人工閱讀
+    occupations = dict(sorted(occupations.items()))
+    categories = dict(sorted(categories.items()))
+
+    result = {
+        "metadata": {
+            "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "total_standards": len(standards_meta),
+            "total_occupations": len(occupations),
+            "total_categories": len(categories),
+            "source_dir": str(json_dir),
+        },
+        "occupations": occupations,
+        "categories": categories,
+        "standards": standards_meta,
+    }
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(result, f, ensure_ascii=False, indent=2)
+
+    logger.success(
+        f"occupation_index.json 已產生：{output_path}\n"
+        f"  職能基準：{len(standards_meta)} 筆，"
+        f"職業別：{len(occupations)} 個，"
+        f"職類別：{len(categories)} 個"
+    )
+    return output_path
