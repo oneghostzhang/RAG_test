@@ -116,13 +116,37 @@ Graph_RAG_test/
 
 ## 🚀 快速開始
 
-### 1. 安裝依賴
+### 1. 下載專案
+
+```bash
+git clone https://github.com/oneghostzhang/RAG_test.git
+cd RAG_test
+```
+
+> `data/occupation_index.json`（職業分類預計算索引）已包含在版控中，clone 後即可直接使用，**無需重新建立索引**。
+
+### 2. 安裝依賴
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. 啟動桌面 UI（建議）
+### 3. 準備資料
+
+將 ICAP 職能基準 PDF 放入 `data/raw_pdf/` 資料夾：
+
+```
+RAG_test/
+└── data/
+    └── raw_pdf/
+        ├── 西點麵包烘焙助理-職能基準.pdf
+        ├── 保健食品產業行銷企劃師-職能基準.pdf
+        └── ...
+```
+
+> PDF 可從 [ICAP 職能發展應用平台](https://icap.wda.gov.tw/) 下載。
+
+### 4. 啟動桌面 UI（建議）
 
 ```bash
 python graph_rag_ui.py
@@ -138,7 +162,7 @@ python graph_rag_ui.py
 [搜索查詢] → 輸入問題 → 選擇搜索模式 → 取得答案
 ```
 
-### 3. 命令列使用
+### 5. 命令列使用
 
 ```bash
 # 測試：解析 5 個 PDF + 建構小型圖譜
@@ -154,9 +178,12 @@ python quick_start.py --mode interactive
 python batch_test.py --input data/raw_pdf --output data/parsed_json_v2
 ```
 
-### 4. 手動重建職業分類索引
+### 6. 關於 occupation_index.json
 
-新增 PDF 並重新解析後，UI 會自動重建。如需手動執行：
+`data/occupation_index.json` 是聯邦搜索的預計算索引，儲存了 905 個職能基準的職業分類對應關係，讓系統啟動時可跳過掃描所有 JSON 的步驟（載入時間從 ~2s 降至 ~0.02s）。
+
+- **首次使用**：clone 後直接可用（已內含於版控）
+- **新增 PDF 後**：UI 解析 PDF 完成時會自動重建，或手動執行：
 
 ```python
 from competency_store import build_occupation_index_json
