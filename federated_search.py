@@ -439,16 +439,14 @@ class FederatedSearchManager:
         # 通俗職業分類資料來源（更精細的路由）
         self.occupation_sources: Dict[str, OccupationDataSource] = {}
 
-        # 路由器
+        # 路由器（強制在 cpu context 下建立，避免 accelerate meta tensor 污染）
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        self.router = CategoryRouter(embedding_dim=embedding_dim)
-        self.router.to(self.device)
+        self.router = self._create_router(embedding_dim)
         self.feature_scaler = StandardScaler()
         self.is_trained = False
 
         # 通俗職業分類路由器
-        self.occupation_router = CategoryRouter(embedding_dim=embedding_dim)
-        self.occupation_router.to(self.device)
+        self.occupation_router = self._create_router(embedding_dim)
         self.occupation_feature_scaler = StandardScaler()
         self.is_occupation_trained = False
 
@@ -466,6 +464,19 @@ class FederatedSearchManager:
             'occupations_queried': 0,
             'occupations_skipped': 0
         }
+
+    def _create_router(self, embedding_dim: int) -> 'CategoryRouter':
+        """建立路由器，強制使用 cpu context 避免 accelerate meta tensor 問題"""
+        try:
+            # torch.device('cpu') context 強制所有 nn.Parameter 在 cpu 上初始化
+            with torch.device('cpu'):
+                router = CategoryRouter(embedding_dim=embedding_dim)
+            if self.device != 'cpu':
+                router.to(self.device)
+            return router
+        except Exception:
+            # 最後備援：直接建立並忽略 device 移動
+            return CategoryRouter(embedding_dim=embedding_dim)
 
     def build_category_sources(
         self,
@@ -685,8 +696,12 @@ class FederatedSearchManager:
             return False
 
         try:
-            ckpt = torch.load(self._router_path, map_location=self.device, weights_only=False)
+            ckpt = torch.load(self._router_path, map_location='cpu', weights_only=False)
+            with torch.device('cpu'):
+                self.router = CategoryRouter(embedding_dim=self.embedding_dim)
             self.router.load_state_dict(ckpt['router_state_dict'])
+            if self.device != 'cpu':
+                self.router.to(self.device)
             self.feature_scaler = ckpt.get('scaler', StandardScaler())
             self.is_trained = True
             logger.info("路由器已載入")
@@ -716,8 +731,12 @@ class FederatedSearchManager:
             return False
 
         try:
-            ckpt = torch.load(self._occupation_router_path, map_location=self.device, weights_only=False)
+            ckpt = torch.load(self._occupation_router_path, map_location='cpu', weights_only=False)
+            with torch.device('cpu'):
+                self.occupation_router = CategoryRouter(embedding_dim=self.embedding_dim)
             self.occupation_router.load_state_dict(ckpt['router_state_dict'])
+            if self.device != 'cpu':
+                self.occupation_router.to(self.device)
             self.occupation_feature_scaler = ckpt.get('scaler', StandardScaler())
             self.is_occupation_trained = True
             logger.info("通俗職業分類路由器已載入")

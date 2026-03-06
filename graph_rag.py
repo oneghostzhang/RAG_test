@@ -1192,8 +1192,10 @@ class GraphRAGQueryEngine:
             "related_knowledge": [],
             "related_skills": [],
             "related_industries": [],  # 行業別
-            "standard_details": []  # 職能基準詳細資訊 (包含 ICAP metadata)
+            "standard_details": [],    # 職能基準詳細資訊 (包含 ICAP metadata)
+            "task_details": {}         # {standard_code: [task_dict,...]} 主要職責/工作任務
         }
+        _task_codes_added: set = set()  # 避免重複加入同一職能基準的任務
 
         for vr in vector_results:
             result_item = {
@@ -1236,6 +1238,32 @@ class GraphRAGQueryEngine:
                     result_item["occupation"] = vr.get("icap_occupation_name")
 
             context["primary_results"].append(result_item)
+
+            # 抓取主要職責/工作任務（限最多 3 個職能基準，避免 prompt 過長）
+            if self._json_store and len(_task_codes_added) < 3:
+                node_type = vr.get("node_type", "")
+                std_code = None
+
+                if node_type == "職能基準":
+                    # 直接用名稱查代碼
+                    std_code = (result_item.get("standard_code") or
+                                (db_metadata.get("standard_code") if db_metadata else None))
+                    if not std_code and std_name:
+                        s = self._json_store.get_standard_by_name(std_name)
+                        if s:
+                            std_code = s.get("code")
+                elif node_type in ("主要職責", "工作任務", "行為指標"):
+                    # 從圖譜節點取 standard_code 屬性
+                    std_code = vr.get("standard_code")
+
+                if std_code and std_code not in _task_codes_added:
+                    s = self._json_store.get_standard_by_code(std_code)
+                    if s and s.get("tasks"):
+                        context["task_details"][std_code] = {
+                            "name": s.get("name", ""),
+                            "tasks": s["tasks"][:8]  # 每個職能基準最多 8 個工作任務
+                        }
+                        _task_codes_added.add(std_code)
 
         for node_id in expanded_nodes:
             node_data = self.kg.get_node_data(node_id)
@@ -1362,18 +1390,22 @@ class GraphRAGQueryEngine:
         if not self._json_store:
             return []
         results = []
+        keyword_lower = keyword.lower()
         for standard in self._json_store.standards.values():
-            for item in standard.knowledge + standard.skills:
-                desc = item.get("description", "") or item.get("name", "")
-                if keyword in desc:
-                    results.append({
-                        "standard_code": standard.code,
-                        "standard_name": standard.name,
-                        "description": desc,
-                        "type": "knowledge" if item in standard.knowledge else "skill"
-                    })
-                    if len(results) >= limit:
-                        return results
+            k_items = standard.knowledge
+            s_items = standard.skills
+            for item_type, items in (("knowledge", k_items), ("skill", s_items)):
+                for item in items:
+                    desc = item.get("description", "") or item.get("name", "")
+                    if keyword_lower in desc.lower():
+                        results.append({
+                            "standard_code": standard.code,
+                            "standard_name": standard.name,
+                            "description": desc,
+                            "type": item_type
+                        })
+                        if len(results) >= limit:
+                            return results
         return results
 
     def search_standards_by_keyword(self, keyword: str, limit: int = 20) -> List[Dict]:
@@ -1513,6 +1545,35 @@ class GraphRAGQueryEngine:
                 if std.get('industry') or std.get('industry_code'):
                     detail_lines.append(f"行業別名稱: {std.get('industry', '')}　行業別代碼: {std.get('industry_code', '（無）')}")
                 context_text += "\n".join(detail_lines)
+
+        # 主要職責與工作任務（最重要的結構化資料）
+        task_details = context.get("task_details", {})
+        if task_details:
+            context_text += "\n\n【主要職責與工作任務】"
+            for std_code, std_data in task_details.items():
+                context_text += f"\n\n▍{std_data['name']}（{std_code}）"
+                # 按主要職責分組
+                duty_groups: dict = {}
+                for t in std_data["tasks"]:
+                    main_resp = t.get("main_responsibility", "")
+                    duty_groups.setdefault(main_resp, []).append(t)
+                for main_resp, tasks in duty_groups.items():
+                    context_text += f"\n{main_resp}"
+                    for t in tasks:
+                        tid = t.get("task_id", "")
+                        tname = t.get("task_name", "")
+                        level = t.get("level", "")
+                        context_text += f"\n  {tid} {tname}"
+                        if level:
+                            context_text += f"（級別{level}）"
+                        # 工作產出
+                        output = t.get("output", "")
+                        if output:
+                            context_text += f"\n    → 產出：{output}"
+                        # 行為指標（最多 3 條）
+                        behaviors = [b for b in t.get("behaviors", []) if b][:3]
+                        for b in behaviors:
+                            context_text += f"\n    · {b}"
 
         # 額外關聯資訊摘要
         if knowledge or skills or industries:

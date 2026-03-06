@@ -542,23 +542,23 @@ class CompetencyJSONStore:
         return [asdict(self.standards[c]) for c in codes if c in self.standards]
 
     def search_standards(self, keyword: str, limit: int = 20) -> List[Dict]:
-        """搜尋職能基準（簡單關鍵字比對）"""
+        """搜尋職能基準（大小寫不敏感關鍵字比對）"""
         results = []
         keyword_lower = keyword.lower()
 
         for standard in self.standards.values():
             score = 0
             # 名稱匹配
-            if keyword in standard.name:
+            if keyword_lower in standard.name.lower():
                 score += 10
             # 工作描述匹配
-            if keyword in standard.job_description:
+            if keyword_lower in standard.job_description.lower():
                 score += 5
             # 職類別匹配
-            if keyword in standard.category_name:
+            if keyword_lower in standard.category_name.lower():
                 score += 3
             # 職業別匹配
-            if keyword in standard.occupation_name:
+            if keyword_lower in standard.occupation_name.lower():
                 score += 3
 
             if score > 0:

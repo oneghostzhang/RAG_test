@@ -188,14 +188,18 @@ class LLMInitWorker(QThread):
     progress = pyqtSignal(str)
     finished = pyqtSignal(bool, str)
 
-    def __init__(self, engine: GraphRAGQueryEngine):
+    def __init__(self, engine: GraphRAGQueryEngine, model_path: str = None):
         super().__init__()
         self.engine = engine
+        self.model_path = model_path
 
     def run(self):
         try:
             self.progress.emit("載入 LLM 模型（這可能需要一些時間）...")
-            success = self.engine.initialize_llm(callback=lambda msg: self.progress.emit(msg))
+            success = self.engine.initialize_llm(
+                model_path=self.model_path,
+                callback=lambda msg: self.progress.emit(msg)
+            )
             if success:
                 self.finished.emit(True, "LLM 模型初始化完成")
             else:
@@ -228,6 +232,35 @@ class FederatedSearchInitWorker(QThread):
                 self.finished.emit(False, "聯邦搜索初始化失敗")
         except Exception as e:
             self.finished.emit(False, f"聯邦搜索初始化失敗: {str(e)}")
+
+
+class RebuildOccupationIndexWorker(QThread):
+    """重建職業索引 JSON + 重新載入聯邦搜索的背景執行緒"""
+    progress = pyqtSignal(str)
+    finished = pyqtSignal(bool, str)
+
+    def __init__(self, engine: GraphRAGQueryEngine, json_dir):
+        super().__init__()
+        self.engine = engine
+        self.json_dir = json_dir
+
+    def run(self):
+        try:
+            self.progress.emit("重建 occupation_index.json...")
+            build_occupation_index_json(self.json_dir)
+            self.progress.emit("重新載入聯邦搜索索引...")
+            success = self.engine.initialize_federated_search(
+                callback=lambda msg: self.progress.emit(msg),
+                force_rebuild=True
+            )
+            if success:
+                categories = self.engine.get_category_list()
+                count = len(categories) if categories else 0
+                self.finished.emit(True, f"職業索引已更新，共 {count} 個職類別")
+            else:
+                self.finished.emit(False, "索引重建成功，但聯邦搜索載入失敗")
+        except Exception as e:
+            self.finished.emit(False, f"重建失敗: {str(e)}")
 
 
 class CommunityVisualizeWorker(QThread):
@@ -1542,11 +1575,11 @@ class GraphRAGMainWindow(QMainWindow):
         self.init_embedding_btn.setToolTip("重新建立向量索引（圖譜有更新時使用）")
         init_btns.addWidget(self.init_embedding_btn)
 
-        self.init_llm_btn = QPushButton("載入 LLM")
+        self.init_llm_btn = QPushButton("更改 LLM")
         self.init_llm_btn.setFixedHeight(32)
-        self.init_llm_btn.clicked.connect(self.init_llm)
+        self.init_llm_btn.clicked.connect(self.change_llm)
         self.init_llm_btn.setStyleSheet(self._get_button_style("#FF5722", "#E64A19"))
-        self.init_llm_btn.setToolTip("載入 LLM 語言模型（TAIDE）以啟用 AI 回答")
+        self.init_llm_btn.setToolTip("選擇並載入新的 GGUF 模型檔案")
         init_btns.addWidget(self.init_llm_btn)
 
         data_layout.addLayout(init_btns)
@@ -2068,9 +2101,10 @@ class GraphRAGMainWindow(QMainWindow):
         semantic_btn.setStyleSheet(self._get_button_style("#4A90E2", "#357ABD"))
         btn_layout.addWidget(semantic_btn)
 
-        init_federated_btn = QPushButton("初始化聯邦搜索")
-        init_federated_btn.clicked.connect(self.init_federated_search)
+        init_federated_btn = QPushButton("更新職業索引")
+        init_federated_btn.clicked.connect(self.rebuild_occupation_index)
         init_federated_btn.setStyleSheet(self._get_button_style("#27AE60", "#219A52"))
+        init_federated_btn.setToolTip("重新掃描 parsed_json_v2/ 並重建 occupation_index.json")
         btn_layout.addWidget(init_federated_btn)
 
         layout.addLayout(btn_layout)
@@ -2118,15 +2152,26 @@ class GraphRAGMainWindow(QMainWindow):
     # =============================
 
     def try_load_existing_graph(self):
-        """嘗試載入現有圖譜，並自動初始化 Embedding（若索引已存在）"""
+        """嘗試載入現有圖譜，並自動初始化 Embedding 與聯邦搜索（若索引已存在）"""
         graph_path = config.GRAPH_DB_DIR / config.GRAPH_FILE
         if graph_path.exists():
             self.load_graph(str(graph_path))
-            # 圖譜載入成功後，若向量索引已存在則自動靜默載入
             if self.engine:
+                # 若向量索引已存在則自動靜默載入
                 index_path = config.VECTORDB_DIR / "graph_rag_vectors" / "index.faiss"
                 if index_path.exists():
                     self._auto_init_embeddings()
+                # 若 occupation_index.json 已存在則自動靜默載入聯邦搜索
+                occupation_json = config.DATA_DIR / "occupation_index.json"
+                if occupation_json.exists():
+                    self.federated_status_label.setText("聯邦搜索: 載入中...")
+                    self.federated_status_label.setStyleSheet("color: #888888; font-size: 9pt;")
+                    self._auto_init_federated_search()
+                # 若 LLM 模型檔存在則自動靜默載入
+                if Path(config.MODEL_PATH).exists():
+                    self.llm_status_label.setText("LLM: 載入中...")
+                    self.llm_status_label.setStyleSheet("font-size: 9pt; color: #888888;")
+                    self._auto_init_llm()
 
         # 更新 PDF 計數
         pdf_count = len(list(config.RAW_PDF_DIR.glob("*.pdf")))
@@ -2325,85 +2370,141 @@ class GraphRAGMainWindow(QMainWindow):
 
         self.statusBar().showMessage("就緒")
 
-    def init_llm(self):
-        """初始化 LLM"""
+    def _auto_init_llm(self):
+        """啟動時靜默自動載入 LLM（不重建）"""
+        self.init_llm_btn.setEnabled(False)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, 0)
+        self.statusBar().showMessage("自動載入 LLM 模型（這可能需要一些時間）...")
+
+        self.llm_worker = LLMInitWorker(self.engine)
+        self.llm_worker.progress.connect(lambda msg: self.statusBar().showMessage(msg))
+        self.llm_worker.finished.connect(self._on_auto_llm_finished)
+        self.llm_worker.start()
+
+    def _on_auto_llm_finished(self, success: bool, msg: str):
+        """自動 LLM 載入完成（靜默，不彈窗）"""
+        self.progress_bar.setVisible(False)
+        self.init_llm_btn.setEnabled(True)
+        if success:
+            model_name = Path(config.MODEL_PATH).name
+            self.llm_status_label.setText(f"LLM: {model_name} ✓")
+            self.llm_status_label.setStyleSheet("font-size: 9pt; color: green;")
+            self.statusBar().showMessage("就緒（LLM 已自動載入）")
+        else:
+            self.llm_status_label.setText("LLM: 自動載入失敗")
+            self.llm_status_label.setStyleSheet("font-size: 9pt; color: red;")
+            self.statusBar().showMessage("就緒（LLM 自動載入失敗，請點擊「更改 LLM」）")
+
+    def change_llm(self):
+        """選擇並載入新的 LLM 模型"""
         if not self.engine:
             QMessageBox.warning(self, "警告", "請先載入知識圖譜")
             return
 
+        # 開啟檔案選擇對話框
+        model_path, _ = QFileDialog.getOpenFileName(
+            self, "選擇 LLM 模型檔案",
+            str(Path(config.MODEL_PATH).parent),
+            "GGUF 模型 (*.gguf);;所有檔案 (*)"
+        )
+        if not model_path:
+            return
+
+        # 更新 config 路徑（本次執行生效）
+        config.MODEL_PATH = model_path
+
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 0)
         self.init_llm_btn.setEnabled(False)
-        self.statusBar().showMessage("載入 LLM 模型中（這可能需要一些時間）...")
+        self.statusBar().showMessage(f"載入 LLM：{Path(model_path).name}...")
 
-        self.llm_worker = LLMInitWorker(self.engine)
+        # 強制重新初始化（先清除舊模型）
+        self.engine.llm = None
+        self.engine.llm_initialized = False
+
+        self.llm_worker = LLMInitWorker(self.engine, model_path=model_path)
         self.llm_worker.progress.connect(lambda msg: self.statusBar().showMessage(msg))
         self.llm_worker.finished.connect(self.on_llm_init_finished)
         self.llm_worker.start()
 
     def on_llm_init_finished(self, success: bool, msg: str):
-        """LLM 初始化完成"""
+        """LLM 初始化完成（更改 LLM 時使用）"""
         self.progress_bar.setVisible(False)
         self.init_llm_btn.setEnabled(True)
 
         if success:
-            self.llm_status_label.setText("LLM: 已初始化 ✓")
+            model_name = Path(config.MODEL_PATH).name
+            self.llm_status_label.setText(f"LLM: {model_name} ✓")
             self.llm_status_label.setStyleSheet("font-size: 9pt; color: green;")
             QMessageBox.information(self, "完成", msg)
         else:
-            self.llm_status_label.setText("LLM: 初始化失敗")
+            self.llm_status_label.setText("LLM: 載入失敗")
             self.llm_status_label.setStyleSheet("font-size: 9pt; color: red;")
             QMessageBox.warning(self, "失敗", msg)
 
         self.statusBar().showMessage("就緒")
 
-    def init_federated_search(self):
-        """初始化聯邦搜索"""
+    def _auto_init_federated_search(self):
+        """啟動時靜默自動從 occupation_index.json 載入聯邦搜索"""
+        self.statusBar().showMessage("自動載入聯邦搜索索引...")
+        self.fed_worker = FederatedSearchInitWorker(self.engine)
+        self.fed_worker.progress.connect(lambda msg: self.statusBar().showMessage(msg))
+        self.fed_worker.finished.connect(self._on_auto_federated_finished)
+        self.fed_worker.start()
+
+    def _on_auto_federated_finished(self, success: bool, msg: str):
+        """自動聯邦搜索載入完成（靜默，不彈窗）"""
+        if success:
+            self._update_federated_status_label()
+            self.statusBar().showMessage("就緒（聯邦搜索已自動載入）")
+        else:
+            self.federated_status_label.setText("聯邦搜索: 自動載入失敗")
+            self.federated_status_label.setStyleSheet("color: red; font-size: 9pt;")
+            self.statusBar().showMessage("就緒（聯邦搜索自動載入失敗，請更新職業索引）")
+
+    def rebuild_occupation_index(self):
+        """重建 occupation_index.json 並重新載入聯邦搜索"""
         if not self.engine:
             QMessageBox.warning(self, "警告", "請先載入知識圖譜")
             return
 
-        # 確保 Embedding 已初始化
-        if self.engine.embedding_model is None:
-            reply = QMessageBox.question(
-                self, "初始化 Embedding",
-                "聯邦搜索需要先初始化 Embedding，是否現在初始化？",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-            )
-            if reply == QMessageBox.StandardButton.Yes:
-                self.init_embeddings()
+        json_dir = config.PARSED_JSON_V2_DIR
+        if not json_dir.exists() or not list(json_dir.glob("*.json")):
+            QMessageBox.warning(self, "警告", f"找不到解析後的 JSON 資料: {json_dir}")
             return
 
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 0)
-        self.statusBar().showMessage("初始化聯邦搜索系統...")
+        self.statusBar().showMessage("重建職業索引中...")
 
-        self.fed_worker = FederatedSearchInitWorker(self.engine)
+        self.fed_worker = RebuildOccupationIndexWorker(self.engine, json_dir)
         self.fed_worker.progress.connect(lambda msg: self.statusBar().showMessage(msg))
-        self.fed_worker.finished.connect(self.on_federated_init_finished)
+        self.fed_worker.finished.connect(self.on_rebuild_occupation_index_finished)
         self.fed_worker.start()
 
-    def on_federated_init_finished(self, success: bool, msg: str):
-        """聯邦搜索初始化完成"""
+    def on_rebuild_occupation_index_finished(self, success: bool, msg: str):
+        """職業索引重建完成"""
         self.progress_bar.setVisible(False)
-
         if success:
-            # 取得統計資訊
-            status_text = "聯邦搜索: 已初始化 ✓"
-            if self.engine and self.engine.federated_manager:
-                fm = self.engine.federated_manager
-                cat_count = len(fm.category_sources)
-                occ_count = len(fm.occupation_sources) if hasattr(fm, 'occupation_sources') else 0
-                status_text = f"聯邦搜索: {cat_count}職類別, {occ_count}通俗職業 ✓"
-            self.federated_status_label.setText(status_text)
-            self.federated_status_label.setStyleSheet("color: green; font-size: 9pt;")
+            self._update_federated_status_label()
             QMessageBox.information(self, "完成", msg)
         else:
-            self.federated_status_label.setText("聯邦搜索: 初始化失敗")
+            self.federated_status_label.setText("聯邦搜索: 更新失敗")
             self.federated_status_label.setStyleSheet("color: red; font-size: 9pt;")
             QMessageBox.warning(self, "失敗", msg)
-
         self.statusBar().showMessage("就緒")
+
+    def _update_federated_status_label(self):
+        """更新聯邦搜索狀態標籤"""
+        status_text = "聯邦搜索: 已載入 ✓"
+        if self.engine and self.engine.federated_manager:
+            fm = self.engine.federated_manager
+            cat_count = len(fm.category_sources)
+            occ_count = len(fm.occupation_sources) if hasattr(fm, 'occupation_sources') else 0
+            status_text = f"聯邦搜索: {cat_count}職類別, {occ_count}通俗職業 ✓"
+        self.federated_status_label.setText(status_text)
+        self.federated_status_label.setStyleSheet("color: green; font-size: 9pt;")
 
     def show_category_list(self):
         """顯示職類別和通俗職業分類列表"""
@@ -2744,14 +2845,12 @@ class GraphRAGMainWindow(QMainWindow):
         if use_federated:
             # 檢查聯邦搜索是否已初始化
             if not self.engine.is_federated_ready():
-                reply = QMessageBox.question(
-                    self, "初始化聯邦搜索",
-                    "聯邦搜索尚未初始化，是否現在初始化？\n"
-                    "(這可能需要一些時間)",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                QMessageBox.warning(
+                    self, "聯邦搜索未就緒",
+                    "聯邦搜索尚未載入。\n\n"
+                    "系統啟動時會自動從 occupation_index.json 載入，\n"
+                    "若仍未就緒，請點擊「更新職業索引」按鈕。"
                 )
-                if reply == QMessageBox.StandardButton.Yes:
-                    self.init_federated_search()
                 return
 
             top_k_categories = self.federated_topk_spin.value()
