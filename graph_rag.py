@@ -8,6 +8,7 @@ Graph RAG 查詢系統
 
 import json
 import pickle
+import re
 from pathlib import Path
 from typing import Dict, List, Set, Optional, Tuple, Any
 from collections import defaultdict
@@ -1342,14 +1343,43 @@ class GraphRAGQueryEngine:
             if results:
                 r = results[0]
                 if r.get("name"):  # 有效的結果
+                    std_code = r.get("code", "")
+
+                    # 部分職能基準跨多個職類別，category_code 可能是拼接字串（如 MPMINMISDSET）
+                    # 從職能基準代碼前綴提取主要 category_code（如 INM3513-009v1 → INM）
+                    raw_cat = r.get("category_code", "")
+                    if raw_cat and len(raw_cat) > 4 and std_code:
+                        m = re.match(r'^([A-Z]{2,4})\d', std_code)
+                        category_code = m.group(1) if m else raw_cat[:3]
+                    else:
+                        category_code = raw_cat
+
+                    # occupation_code 可能是多個4位代碼拼接（如 2121442152...），只取第一個
+                    raw_occ = r.get("occupation_code", "")
+                    if raw_occ and len(raw_occ) > 4:
+                        m = re.match(r'^(\d{4})', raw_occ)
+                        occupation_code = m.group(1) if m else raw_occ[:4]
+                    else:
+                        occupation_code = raw_occ
+
+                    # 同理處理 industry_code（可能已是陣列，取第一個）
+                    raw_ind = r.get("industry_code", "")
+                    if isinstance(raw_ind, list):
+                        industry_code = raw_ind[0] if raw_ind else ""
+                    else:
+                        industry_code = raw_ind
+
+                    raw_ind_name = r.get("industry_name", "")
+                    industry_name = raw_ind_name[0] if isinstance(raw_ind_name, list) else raw_ind_name
+
                     return {
-                        "standard_code": r.get("code", ""),
+                        "standard_code": std_code,
                         "category": r.get("category_name", ""),
-                        "category_code": r.get("category_code", ""),
+                        "category_code": category_code,
                         "occupation": r.get("occupation_name", ""),
-                        "occupation_code": r.get("occupation_code", ""),
-                        "industry": r.get("industry_name", ""),
-                        "industry_code": r.get("industry_code", ""),
+                        "occupation_code": occupation_code,
+                        "industry": industry_name,
+                        "industry_code": industry_code,
                         "description": r.get("job_description", ""),
                         "level": r.get("level", ""),
                     }

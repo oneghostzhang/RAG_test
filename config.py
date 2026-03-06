@@ -38,7 +38,7 @@ class GraphRAGConfig:
     N_CTX: int = 4096
     N_THREADS: int = 8
     TEMPERATURE: float = 0.1  # 降低溫度，更確定性的輸出
-    MAX_TOKENS: int = 3072    # 增加到 3072，允許更詳細完整的回答
+    MAX_TOKENS: int = 512     # 限制輸出長度，避免 CPU 推論過久（約 1-2 分鐘內完成）
     LLM_STOP_TOKENS: List[str] = field(default_factory=lambda: [
         "\n問題:", "\n問:", "問題列表", "\n【用戶問題】"
     ])
