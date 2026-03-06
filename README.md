@@ -4,7 +4,7 @@
 ![License](https://img.shields.io/badge/License-MIT-green)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-lightgrey)
 ![UI](https://img.shields.io/badge/UI-PyQt6-41CD52?logo=qt&logoColor=white)
-![Version](https://img.shields.io/badge/Version-v1.1.0-orange)
+![Version](https://img.shields.io/badge/Version-v1.2.0-orange)
 
 > 基於台灣 ICAP 職能基準的知識圖譜系統，整合 Graph RAG 技術，支援跨職業能力比較、職涯路徑規劃與自然語言查詢。
 
@@ -350,6 +350,7 @@ LED光學設計工程師的主要職責有哪些？
 
 | 版本 | 日期 | 更新內容 |
 |------|------|---------|
+| v1.2.0 | 2026-03-06 | 自動初始化聯邦搜索與 LLM；修復 PyTorch meta tensor 錯誤；修正 LLM 回答亂生成（注入工作任務內容）；搜尋改為大小寫不敏感 |
 | v1.1.0 | 2026-03-04 | 預計算 occupation_index.json（索引載入加速 100x）；移除舊版 pdf_parser / competency_db；擴充 LLM prompt 術語定義與回答原則 |
 | v1.0.0 | 2026-01-07 | 初始版本：PDF 解析、知識圖譜建構、Graph RAG 查詢、PyQt6 UI、聯邦搜索 |
 
@@ -361,4 +362,4 @@ LED光學設計工程師的主要職責有哪些？
 
 ---
 
-**版本**: v1.1.0 　**最後更新**: 2026-03-04
+**版本**: v1.2.0 　**最後更新**: 2026-03-06
