@@ -101,8 +101,6 @@ Graph_RAG_test/
 │
 ├── 📂 data/
 │   ├── occupation_index.json   # ⚡ 預計算職業分類索引（快速載入用）
-│   ├── competency_schema.sql   # 資料庫 Schema
-│   ├── competency_queries.sql  # 常用查詢 SQL
 │   ├── raw_pdf/                # 原始 PDF（不納入版控）
 │   └── parsed_json_v2/         # 解析後 JSON（不納入版控）
 │
