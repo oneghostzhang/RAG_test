@@ -2160,18 +2160,14 @@ class GraphRAGMainWindow(QMainWindow):
                 # 若向量索引已存在則自動靜默載入
                 index_path = config.VECTORDB_DIR / "graph_rag_vectors" / "index.faiss"
                 if index_path.exists():
-                    self._auto_init_embeddings()
-                # 若 occupation_index.json 已存在則自動靜默載入聯邦搜索
-                occupation_json = config.DATA_DIR / "occupation_index.json"
-                if occupation_json.exists():
-                    self.federated_status_label.setText("聯邦搜索: 載入中...")
-                    self.federated_status_label.setStyleSheet("color: #888888; font-size: 9pt;")
-                    self._auto_init_federated_search()
-                # 若 LLM 模型檔存在則自動靜默載入
-                if Path(config.MODEL_PATH).exists():
-                    self.llm_status_label.setText("LLM: 載入中...")
-                    self.llm_status_label.setStyleSheet("font-size: 9pt; color: #888888;")
-                    self._auto_init_llm()
+                    self.embedding_status_label.setText("Embedding: 載入中...")
+                    self.embedding_status_label.setStyleSheet("font-size: 9pt; color: #888888;")
+                    self._auto_init_embeddings(force_rebuild=False)
+                else:
+                    self.embedding_status_label.setText("Embedding: 建立中...")
+                    self.embedding_status_label.setStyleSheet("font-size: 9pt; color: #888888;")
+                    self._auto_init_embeddings(force_rebuild=True)
+                # 啟動順序：Embedding → LLM → 聯邦搜索（見各自的 finished handler）
 
         # 更新 PDF 計數
         pdf_count = len(list(config.RAW_PDF_DIR.glob("*.pdf")))
@@ -2333,20 +2329,21 @@ class GraphRAGMainWindow(QMainWindow):
         self.worker.finished.connect(self.on_embedding_init_finished)
         self.worker.start()
 
-    def _auto_init_embeddings(self):
-        """啟動時靜默自動載入已有的 Embedding 索引（不重建）"""
+    def _auto_init_embeddings(self, force_rebuild: bool = False):
+        """啟動時靜默自動載入或重建 Embedding 索引；完成後自動鏈式啟動 LLM"""
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 0)
         self.init_embedding_btn.setEnabled(False)
-        self.statusBar().showMessage("自動載入 Embedding 索引...")
+        msg = "自動重建 Embedding 索引..." if force_rebuild else "自動載入 Embedding 索引..."
+        self.statusBar().showMessage(msg)
 
-        self.worker = EmbeddingInitWorker(self.engine, force_rebuild=False)
-        self.worker.progress.connect(lambda msg: self.statusBar().showMessage(msg))
+        self.worker = EmbeddingInitWorker(self.engine, force_rebuild=force_rebuild)
+        self.worker.progress.connect(lambda m: self.statusBar().showMessage(m))
         self.worker.finished.connect(self._on_auto_embedding_finished)
         self.worker.start()
 
     def _on_auto_embedding_finished(self, success: bool, msg: str):
-        """自動 Embedding 載入完成（靜默，不彈窗）"""
+        """自動 Embedding 載入完成（靜默，不彈窗）；完成後自動啟動 LLM 載入"""
         self.progress_bar.setVisible(False)
         self.init_embedding_btn.setEnabled(True)
         if success:
@@ -2355,6 +2352,11 @@ class GraphRAGMainWindow(QMainWindow):
             self.statusBar().showMessage("就緒（圖譜 + Embedding 已自動載入）")
         else:
             self.statusBar().showMessage("就緒（Embedding 自動載入失敗，請手動點擊「更新 Embedding」）")
+        # 不論 Embedding 成功與否，接著自動載入 LLM
+        if Path(config.MODEL_PATH).exists():
+            self.llm_status_label.setText("LLM: 載入中...")
+            self.llm_status_label.setStyleSheet("font-size: 9pt; color: #888888;")
+            self._auto_init_llm()
 
     def on_embedding_init_finished(self, success: bool, msg: str):
         """Embedding 初始化完成"""
@@ -2383,7 +2385,7 @@ class GraphRAGMainWindow(QMainWindow):
         self.llm_worker.start()
 
     def _on_auto_llm_finished(self, success: bool, msg: str):
-        """自動 LLM 載入完成（靜默，不彈窗）"""
+        """自動 LLM 載入完成（靜默，不彈窗）；完成後自動鏈式啟動聯邦搜索"""
         self.progress_bar.setVisible(False)
         self.init_llm_btn.setEnabled(True)
         if success:
@@ -2395,6 +2397,12 @@ class GraphRAGMainWindow(QMainWindow):
             self.llm_status_label.setText("LLM: 自動載入失敗")
             self.llm_status_label.setStyleSheet("font-size: 9pt; color: red;")
             self.statusBar().showMessage("就緒（LLM 自動載入失敗，請點擊「更改 LLM」）")
+        # 不論 LLM 成功與否，接著自動載入聯邦搜索
+        occupation_json = config.DATA_DIR / "occupation_index.json"
+        if occupation_json.exists():
+            self.federated_status_label.setText("聯邦搜索: 載入中...")
+            self.federated_status_label.setStyleSheet("color: #888888; font-size: 9pt;")
+            self._auto_init_federated_search()
 
     def change_llm(self):
         """選擇並載入新的 LLM 模型"""
