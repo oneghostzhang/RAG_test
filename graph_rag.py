@@ -230,6 +230,11 @@ class GraphRAGQueryEngine:
                 logger.warning(f"Embedding 模型不匹配 ({stored_model} vs {self.embedding_model_name})，需重建索引")
                 return False
 
+            # 若 json_store 可用但索引是舊的節點模式，強制重建為 chunk-based
+            if not is_chunk_based and self._json_store is not None:
+                logger.info("偵測到舊版節點索引，升級為 chunk-based 索引...")
+                return False
+
             # chunk-based 模式：用向量總數驗證；node-based：用節點數驗證
             if is_chunk_based:
                 current_count = self.vector_index.ntotal
