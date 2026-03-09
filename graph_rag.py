@@ -82,8 +82,9 @@ class GraphRAGQueryEngine:
         # Embedding 模型和向量索引
         self.embedding_model: Optional[SentenceTransformer] = None
         self.vector_index: Optional[faiss.Index] = None
-        self.vector_id_map: Dict[int, str] = {}  # 向量索引 -> 節點ID
-        self.node_texts: Dict[str, str] = {}     # 節點ID -> 文本
+        self.vector_id_map: Dict[int, str] = {}   # 向量索引 -> 節點ID
+        self.node_texts: Dict[str, str] = {}      # 節點ID -> 文本
+        self.chunk_meta_map: Dict[int, Dict] = {} # 向量索引 -> Chunk 元數據（chunk-based 模式）
 
         # LLM（可選）
         self.llm = None
@@ -220,22 +221,29 @@ class GraphRAGQueryEngine:
 
             self.vector_id_map = metadata.get('vector_id_map', {})
             self.node_texts = metadata.get('node_texts', {})
-            stored_node_count = metadata.get('node_count', 0)
+            self.chunk_meta_map = metadata.get('chunk_meta_map', {})
+            is_chunk_based = metadata.get('is_chunk_based', False)
+            stored_count = metadata.get('node_count', 0)
             stored_model = metadata.get('embedding_model', '')
-
-            # 驗證索引有效性
-            current_node_count = sum(
-                len(list(self.kg.get_nodes_by_type(t)))
-                for t in ["知識", "技能", "態度", "行為指標", "工作任務", "主要職責", "職能基準"]
-            )
 
             if stored_model != self.embedding_model_name:
                 logger.warning(f"Embedding 模型不匹配 ({stored_model} vs {self.embedding_model_name})，需重建索引")
                 return False
 
-            if abs(stored_node_count - current_node_count) > current_node_count * 0.1:
-                logger.warning(f"節點數量變化過大 ({stored_node_count} vs {current_node_count})，需重建索引")
-                return False
+            # chunk-based 模式：用向量總數驗證；node-based：用節點數驗證
+            if is_chunk_based:
+                current_count = self.vector_index.ntotal
+                if stored_count > 0 and abs(stored_count - current_count) > stored_count * 0.2:
+                    logger.warning(f"Chunk 索引數量變化 ({stored_count} vs {current_count})，需重建索引")
+                    return False
+            else:
+                current_count = sum(
+                    len(list(self.kg.get_nodes_by_type(t)))
+                    for t in ["知識", "技能", "態度", "行為指標", "工作任務", "主要職責", "職能基準"]
+                )
+                if abs(stored_count - current_count) > current_count * 0.1:
+                    logger.warning(f"節點數量變化過大 ({stored_count} vs {current_count})，需重建索引")
+                    return False
 
             logger.info(f"向量索引載入完成: {self.vector_index.ntotal} 個向量")
             return True
@@ -269,10 +277,13 @@ class GraphRAGQueryEngine:
             )
 
             # 存儲元數據
+            is_chunk_based = bool(self.chunk_meta_map)
             metadata = {
                 'vector_id_map': self.vector_id_map,
                 'node_texts': self.node_texts,
-                'node_count': current_node_count,
+                'chunk_meta_map': self.chunk_meta_map,
+                'is_chunk_based': is_chunk_based,
+                'node_count': self.vector_index.ntotal if is_chunk_based else current_node_count,
                 'embedding_model': self.embedding_model_name,
                 'vector_count': self.vector_index.ntotal
             }
@@ -286,28 +297,102 @@ class GraphRAGQueryEngine:
             logger.error(f"存儲向量索引失敗: {e}")
 
     def _build_vector_index(self):
-        """建立 FAISS 向量索引"""
+        """建立 FAISS 向量索引（優先使用 chunk-based，回退到節點向量化）"""
         logger.info("建立向量索引...")
 
-        # 收集需要向量化的文本
+        # 優先使用 chunk-based 向量化（語意品質更好）
+        if self._json_store:
+            self._build_chunk_vector_index()
+            return
+
+        # Fallback: 節點向量化
+        self._build_node_vector_index()
+
+    def _build_chunk_vector_index(self):
+        """使用 chunks_for_rag 建立 FAISS 向量索引"""
+        # 預建標準代碼 → 節點ID 映射（用於後續圖譜擴展）
+        code_to_node: Dict[str, str] = {}
+        for node_id in self.kg.get_nodes_by_type("職能基準"):
+            nd = self.kg.get_node_data(node_id)
+            if nd and nd.get("code"):
+                code_to_node[nd["code"]] = node_id
+
+        all_chunks = self._json_store.get_all_rag_chunks()
+        logger.info(f"載入 {len(all_chunks)} 個 RAG chunks...")
+
+        processed = []
+        for chunk in all_chunks:
+            content = chunk.get("content", "").strip()
+            if not content:
+                continue
+            meta = chunk.get("metadata", {})
+            ct = meta.get("chunk_type", "")
+            std_code = chunk.get("standard_code", "")
+            std_name = chunk.get("standard_name", "")
+
+            # 跳過 summary（與 overview + task 重複，節省向量空間）
+            if ct == "summary":
+                continue
+
+            # task chunk 補上職能基準名稱（現有 chunks 缺少此資訊，影響跨標準查詢）
+            if ct == "task" and std_name and std_name not in content:
+                content = f"職能基準: {std_name}（{std_code}）\n" + content
+
+            # 截斷超長 chunk（bge-base-zh-v1.5 上限約 750 字）
+            if len(content) > 750:
+                content = content[:750]
+
+            node_id = code_to_node.get(std_code, std_code)
+            processed.append({
+                "content": content,
+                "node_id": node_id,
+                "standard_code": std_code,
+                "standard_name": std_name,
+                "chunk_type": ct,
+                "task_id": meta.get("task_id", ""),
+            })
+
+        if not processed:
+            logger.warning("沒有可用的 chunks，回退到節點向量化")
+            self._build_node_vector_index()
+            return
+
+        texts = [p["content"] for p in processed]
+        logger.info(f"向量化 {len(texts)} 個 chunks...")
+        embeddings = self.embedding_model.encode(texts, show_progress_bar=True)
+
+        dimension = embeddings.shape[1]
+        self.vector_index = faiss.IndexFlatIP(dimension)
+        faiss.normalize_L2(embeddings)
+        self.vector_index.add(embeddings)
+
+        self.vector_id_map = {i: p["node_id"] for i, p in enumerate(processed)}
+        self.chunk_meta_map = {
+            i: {
+                "standard_code": p["standard_code"],
+                "standard_name": p["standard_name"],
+                "chunk_type": p["chunk_type"],
+                "task_id": p["task_id"],
+                "chunk_content": p["content"],
+            }
+            for i, p in enumerate(processed)
+        }
+        logger.success(f"Chunk 向量索引建立完成: {len(texts)} 個向量（跳過 summary）")
+
+    def _build_node_vector_index(self):
+        """節點向量化（fallback 用途）"""
         texts = []
         node_ids = []
 
-        # 對知識、技能、態度、行為指標等建立向量
         target_types = ["知識", "技能", "態度", "行為指標", "工作任務", "主要職責", "職能基準"]
-
         for node_type in target_types:
-            nodes = self.kg.get_nodes_by_type(node_type)
-            for node_id in nodes:
+            for node_id in self.kg.get_nodes_by_type(node_type):
                 node_data = self.kg.get_node_data(node_id)
                 if node_data:
-                    # 組合節點文本
-                    text_parts = [
+                    text = " ".join(filter(None, [
                         node_data.get("name", ""),
                         node_data.get("description", ""),
-                    ]
-                    text = " ".join([p for p in text_parts if p])
-
+                    ]))
                     if text.strip():
                         texts.append(text)
                         node_ids.append(node_id)
@@ -317,24 +402,16 @@ class GraphRAGQueryEngine:
             logger.warning("沒有可向量化的文本")
             return
 
-        # 生成向量
         logger.info(f"向量化 {len(texts)} 個節點...")
         embeddings = self.embedding_model.encode(texts, show_progress_bar=True)
 
-        # 建立 FAISS 索引
         dimension = embeddings.shape[1]
-        self.vector_index = faiss.IndexFlatIP(dimension)  # 使用內積相似度
-
-        # 正規化向量（用於 cosine similarity）
+        self.vector_index = faiss.IndexFlatIP(dimension)
         faiss.normalize_L2(embeddings)
         self.vector_index.add(embeddings)
 
-        # 建立 ID 映射
-        self.vector_id_map = {}
-        for i, node_id in enumerate(node_ids):
-            self.vector_id_map[i] = node_id
-
-        logger.success(f"向量索引建立完成: {len(texts)} 個向量")
+        self.vector_id_map = {i: node_id for i, node_id in enumerate(node_ids)}
+        logger.success(f"節點向量索引建立完成: {len(texts)} 個向量")
 
     def initialize_federated_search(self, force_rebuild: bool = False, callback=None):
         """
@@ -798,19 +875,47 @@ class GraphRAGQueryEngine:
         scores, indices = self.vector_index.search(query_vector, top_k)
 
         results = []
+        seen_nodes: set = set()  # chunk-based 模式下避免同一標準重複出現
+
         for i, (score, idx) in enumerate(zip(scores[0], indices[0])):
             if idx < 0:
                 continue
 
             node_id = self.vector_id_map.get(idx)
-            if node_id:
-                node_data = self.kg.get_node_data(node_id)
-                if node_data:
-                    results.append({
-                        **node_data,
-                        "score": float(score),
-                        "full_id": node_id
-                    })
+            if not node_id:
+                continue
+
+            cm = self.chunk_meta_map.get(idx, {})
+
+            # chunk-based 模式：同一標準節點只保留相似度最高的 chunk
+            if cm and node_id in seen_nodes:
+                continue
+
+            node_data = self.kg.get_node_data(node_id) or {}
+            result = {
+                **node_data,
+                "score": float(score),
+                "full_id": node_id,
+            }
+
+            # 附加 chunk 元數據（chunk-based 模式才有）
+            if cm:
+                result["standard_code"] = cm.get("standard_code") or result.get("standard_code", "")
+                result["chunk_type"] = cm.get("chunk_type", "")
+                result["task_id"] = cm.get("task_id", "")
+                result["chunk_content"] = cm.get("chunk_content", "")
+                # 若圖譜節點找不到名稱，用 standard_name 補充
+                if not result.get("name"):
+                    result["name"] = cm.get("standard_name", "")
+                if not result.get("node_type"):
+                    type_map = {
+                        "task": "工作任務", "overview": "職能基準",
+                        "knowledge_skills": "知識", "attitudes": "態度",
+                    }
+                    result["node_type"] = type_map.get(cm.get("chunk_type", ""), "職能基準")
+                seen_nodes.add(node_id)
+
+            results.append(result)
 
         return results
 
